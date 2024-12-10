@@ -1,0 +1,121 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.feature_extraction.text import CountVectorizer
+from transformers import BertTokenizer
+
+# Loading dataset 
+mbti_df = pd.read_csv('C:/Users/Vanshika/Downloads/mbtidataset/mbti_1.csv')
+
+# Step 1: Basic Preprocessing
+# Converting text into lowercase
+mbti_df['posts'] = mbti_df['posts'].str.lower()
+
+# Removing special characters
+mbti_df['posts'] = mbti_df['posts'].str.replace(r'[^a-zA-Z\s]', '', regex=True)
+
+# Step 2: Tokenization of text 
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
+# Step 3: Counting of Personal Pronouns (Additional Feature)
+personal_pronouns = ['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves']
+def count_pronouns(text):
+    return sum(1 for word in text.split() if word in personal_pronouns)
+
+mbti_df['pronoun_count'] = mbti_df['posts'].apply(count_pronouns)
+
+# Step 4: Encoding MBTI Labels (Type of Personality)
+label_encoder = LabelEncoder()
+y_encoded = label_encoder.fit_transform(mbti_df['type'])
+
+# Step 5: Tokenizing Posts (Convert Text into Token IDs)
+def encode_text(text):
+    return tokenizer(text, padding='max_length', truncation=True, max_length=512, return_tensors='pt')
+
+# Apply Tokenization to the posts
+mbti_df['encoded_posts'] = mbti_df['posts'].apply(encode_text)
+
+# Step 6: Spliting the Data into Train and Test Sets
+X_train, X_test, y_train, y_test = train_test_split(mbti_df['encoded_posts'], y_encoded, test_size=0.2, random_state=42)
+
+import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import BertForSequenceClassification, Trainer, TrainingArguments
+
+# Step 7: Custom Dataset Class
+class MBTIDataset(Dataset):
+    def __init__(self, texts, labels):
+        self.texts = texts
+        self.labels = labels
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        text = self.texts[idx]
+        label = torch.tensor(self.labels[idx], dtype=torch.long)
+        encoded_text = text['input_ids'].squeeze(0)  # Get token ids
+        attention_mask = text['attention_mask'].squeeze(0)  # Get attention mask
+        return {'input_ids': encoded_text, 'attention_mask': attention_mask, 'labels': label}
+
+# Creating PyTorch datasets
+train_dataset = MBTIDataset(X_train.values, y_train)
+test_dataset = MBTIDataset(X_test.values, y_test)
+
+# Step 8: Model Definition
+model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=len(label_encoder.classes_))
+
+# Step 9: Training Arguments
+training_args = TrainingArguments(
+    output_dir='./results',          # output directory
+    evaluation_strategy='epoch',     # evaluation strategy to adopt during training
+    learning_rate=2e-5,              # learning rate for optimization
+    per_device_train_batch_size=16,  # batch size for training
+    per_device_eval_batch_size=16,   # batch size for evaluation
+    num_train_epochs=3,              # number of epochs
+    weight_decay=0.01,               # strength of weight decay
+    logging_dir='./logs',            # directory for storing logs
+)
+
+# Step 10: Trainer Setup
+trainer = Trainer(
+    model=model,                           # the model to be trained
+    args=training_args,                    # training arguments, defined above
+    train_dataset=train_dataset,           # training dataset
+    eval_dataset=test_dataset              # evaluation dataset
+)
+
+# Step 11: Model Training
+trainer.train()
+
+# Step 12: Model Evaluation
+results = trainer.evaluate()
+print(results)
+
+# Step 13: User Input and MBTI Prediction
+
+# Function to predict MBTI personality type for a given input paragraph
+def predict_mbtI(text):
+    # Preprocess and tokenize the input text
+    encoded_input = tokenizer(text, padding='max_length', truncation=True, max_length=512, return_tensors='pt')
+    
+    # Make prediction using the trained model
+    model.eval()  # Set model to evaluation mode
+    with torch.no_grad():
+        outputs = model(**encoded_input)
+        logits = outputs.logits
+    
+    # Get predicted class (MBTI type)
+    predicted_class_idx = torch.argmax(logits, dim=1).item()
+    
+    # Decode the predicted MBTI type label
+    predicted_label = label_encoder.inverse_transform([predicted_class_idx])[0]
+    
+    return predicted_label
+
+# Example usage of the function
+user_input = input("Enter a paragraph to predict the MBTI personality type: ")
+predicted_mbtI = predict_mbtI(user_input)
+print(f"The predicted MBTI personality type is: {predicted_mbtI}")
+
